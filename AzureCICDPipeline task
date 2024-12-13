@@ -1,0 +1,174 @@
+trigger:
+  branches:
+    include:
+      - main  # Trigger on push to the main branch
+
+pr:
+  branches:
+    include:
+      - main  # Trigger on pull requests to the main branch
+
+schedules:
+  - cron: "0 * * * *"  # Runs every hour at minute 0
+    displayName: "Scheduled Run"
+    branches:
+      include:
+        - main  # Trigger on the main branch
+
+jobs:
+  - job: Test
+    displayName: "Test Job"
+    pool:
+      vmImage: 'ubuntu-latest'  # Use Ubuntu for the pipeline
+    
+    strategy:
+      matrix:
+        python-version:
+          - '3.8'
+          - '3.9'
+          - '3.10'
+      maxParallel: 3  # Run jobs in parallel for each Python version
+
+    steps:
+      - task: Checkout@2
+        displayName: 'Checkout code'
+      
+      # Cache Python dependencies to speed up the workflow
+      - task: Cache@2
+        displayName: 'Cache Python dependencies'
+        inputs:
+          key: 'pip | "$(Agent.OS)" | **/requirements.txt'
+          restoreKeys: |
+            pip | "$(Agent.OS)"
+          path: $(PIP_CACHE_DIR)
+      
+      # Set up Python and install dependencies
+      - task: UsePythonVersion@0
+        displayName: 'Set up Python'
+        inputs:
+          versionSpec: '$(python-version)'  # Use matrix for multiple Python versions
+          
+      - script: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+        displayName: 'Install dependencies'
+      
+      # Run tests with pytest
+      - script: |
+          pytest --maxfail=1 --disable-warnings -q
+        displayName: 'Run tests'
+
+      # Install and run Flake8 for code linting
+      - script: |
+          python -m pip install flake8
+          flake8 .
+        displayName: 'Run Flake8'
+
+      # Run Snyk security scan (if Snyk is configured)
+      - task: SnykSecurityScan@0
+        displayName: 'Run Snyk Security Scan'
+        inputs:
+          snykToken: $(SNYK_TOKEN)
+      
+      # Run tests with coverage and generate a report
+      - script: |
+          coverage run -m pytest
+          coverage xml  # Generate XML report for Codecov
+        displayName: 'Run tests with coverage'
+
+      # Upload coverage report to Codecov (if configured)
+      - task: UploadFile@1
+        displayName: 'Upload coverage report to Codecov'
+        inputs:
+          sourceFolder: $(Build.SourcesDirectory)
+          filePattern: '**/coverage.xml'
+          targetPath: $(Build.ArtifactStagingDirectory)
+
+  - job: DockerBuild
+    displayName: "Docker Build and Push"
+    dependsOn: Test
+    condition: succeeded()  # Only run if the Test job succeeds
+    pool:
+      vmImage: 'ubuntu-latest'  # Use Ubuntu for the pipeline
+
+    steps:
+      # Log in to Docker Hub
+      - task: Docker@2
+        displayName: 'Log in to Docker Hub'
+        inputs:
+          command: 'login'
+          containerRegistry: $(DOCKER_REGISTRY)
+          username: $(DOCKER_USERNAME)
+          password: $(DOCKER_PASSWORD)
+
+      # Build Docker image
+      - task: Docker@2
+        displayName: 'Build Docker image'
+        inputs:
+          command: 'build'
+          Dockerfile: '**/Dockerfile'
+          tags: 'latest'
+      
+      # Push Docker image to Docker Hub
+      - task: Docker@2
+        displayName: 'Push Docker image to Docker Hub'
+        inputs:
+          command: 'push'
+          containerRegistry: $(DOCKER_REGISTRY)
+          repository: $(DOCKER_USERNAME)/my-app
+          tags: 'latest'
+
+  - job: Deploy
+    displayName: "Deploy to Staging"
+    dependsOn: DockerBuild
+    condition: succeeded()  # Only run if the DockerBuild job succeeds
+    pool:
+      vmImage: 'ubuntu-latest'  # Use Ubuntu for the pipeline
+
+    steps:
+      - task: AzureWebApp@1
+        displayName: 'Deploy to Azure Web App'
+        inputs:
+          azureSubscription: $(AZURE_SUBSCRIPTION)
+          appName: $(WEB_APP_NAME)
+          package: $(Build.ArtifactStagingDirectory)/my-app.zip
+          
+      # Manual approval step (optional)
+      - task: ManualApproval@1
+        displayName: 'Manual Approval Before Deployment'
+        inputs:
+          approvers: $(APPROVERS_LIST)
+
+  - job: Notifications
+    displayName: "Send Notifications"
+    dependsOn: Deploy
+    condition: succeeded()  # Only run if the deployment succeeds
+
+    steps:
+      # Send Slack notification on success
+      - task: Slack@1
+        displayName: 'Send Slack Notification on Success'
+        inputs:
+          slackConnection: $(SLACK_CONNECTION)
+          message: "CI/CD pipeline succeeded! 🎉"
+          channel: $(SLACK_CHANNEL_ID)
+          
+      # Send email on failure (if needed)
+      - task: SendEmail@1
+        displayName: 'Send Email on Failure'
+        condition: failed()
+        inputs:
+          subject: 'CI/CD Pipeline Failed'
+          to: 'team@example.com'
+          body: 'The CI/CD pipeline has failed. Please check the logs for details.
+
+
+
+          Key Changes and Notes:
+Trigger and PR: Azure DevOps uses trigger for automatic pipeline runs on code pushes, and pr for pull request events, similar to GitHub Actions' on.
+Job Structure: Azure Pipelines uses jobs and steps, whereas GitHub Actions uses jobs and workflows. Each job in Azure Pipelines runs in parallel or sequentially, depending on the dependsOn relationship.
+Matrix Testing: The matrix is defined under strategy, and the Python version is passed as a variable ($(python-version)).
+Cache Task: Azure DevOps has its own Cache task to speed up dependency installation, and the cache key is based on requirements.txt to restore dependencies.
+Docker Build and Push: Docker tasks (Docker@2) are used for building and pushing Docker images to Docker Hub.
+Azure Deployment: The example uses an Azure Web App deployment task (AzureWebApp@1). Modify this based on your actual deployment target (e.g., AKS, Azure Functions).
+Notifications: You can use Azure DevOps' Slack or Email tasks to send notifications on pipeline success or failure. Ensure these integrations are set up correctly (e.g., Slack connection, email configuration).

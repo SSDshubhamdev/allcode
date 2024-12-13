@@ -1,0 +1,184 @@
+name: Python CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main  # Trigger on push to the main branch
+  pull_request:
+    branches:
+      - main  # Trigger on pull requests to the main branch
+  schedule:
+    - cron: '0 * * * *'  # Runs every hour at minute 0
+  workflow_dispatch:  # Manual trigger (to run the workflow manually from GitHub UI)
+
+jobs:
+  test:
+    runs-on: ubuntu-latest  # Set the environment for testing (can also use windows or macos)
+    
+    strategy:
+      matrix:
+        python-version: ['3.8', '3.9', '3.10']  # Run tests on multiple Python versions
+      fail-fast: false  # Continue running all jobs even if one fails
+
+    steps:
+      # Step 1: Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      # Step 2: Cache Python dependencies to speed up the workflow
+      - name: Cache Python dependencies
+        uses: actions/cache@v2
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # Step 3: Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}  # Using matrix to test across multiple Python versions
+
+      # Step 4: Install dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Step 5: Run tests
+      - name: Run tests
+        run: |
+          pytest --maxfail=1 --disable-warnings -q  # Run tests using pytest (customize as per your testing needs)
+
+      # Step 6: Upload test results (optional, if you save results in a file like result.log)
+      - name: Upload test results
+        uses: actions/upload-artifact@v2
+        with:
+          name: test-results
+          path: result.log  # Assuming test results are stored in result.log, change if needed
+
+      # Step 7: Install flake8 for code linting
+      - name: Install flake8
+        run: |
+          python -m pip install flake8
+
+      - name: Run Flake8
+        run: |
+          flake8 .  # Lint the code in the current directory (you can specify files or directories)
+
+      # Step 8: Dependency check with pipdeptree (optional)
+      - name: Check Python dependencies
+        run: |
+          pip install pipdeptree
+          pipdeptree --freeze  # Display installed dependencies
+
+      # Step 9: Run Snyk Security Scan (optional)
+      - name: Run Snyk Security Scan
+        uses: snyk/actions/python@v2
+        with:
+          snyk-token: ${{ secrets.SNYK_TOKEN }}  # Add SNYK_TOKEN in your GitHub secrets
+
+      # Step 10: Build Docker image and push to Docker Hub
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/my-app:latest .
+
+      - name: Push Docker image to Docker Hub
+        run: |
+          docker push ${{ secrets.DOCKER_USERNAME }}/my-app:latest
+
+      # Step 11: Run tests with coverage (optional)
+      - name: Run tests with coverage
+        run: |
+          coverage run -m pytest
+          coverage xml  # Generate XML report
+
+      # Step 12: Upload coverage report to Codecov (optional)
+      - name: Upload coverage report to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: coverage.xml  # Path to the coverage report
+
+      # Step 13: Manual Approval for Deployment (optional)
+      - name: Manual Approval Before Deployment
+        uses: p4r4s/actions/manual-approval@v1
+        if: success()  # Run this step only if previous steps succeed
+
+      # Step 14: Deploy to Staging or Production
+      - name: Deploy to Staging
+        if: success()  # Only deploy if tests pass
+        run: |
+          echo "Deploying to Staging Server..."
+          # Add your actual deployment commands here (e.g., Kubernetes, SSH, etc.)
+
+      # Step 15: Send Slack Notification on Success (optional)
+      - name: Send Slack Notification on Success
+        if: success()
+        uses: slackapi/slack-github-action@v1.17.0
+        with:
+          channel-id: ${{ secrets.SLACK_CHANNEL_ID }}
+          slack-token: ${{ secrets.SLACK_TOKEN }}
+          text: "Workflow Success: ${{ github.workflow }} build succeeded."
+
+      # Step 16: Send Slack Notification on Failure (optional)
+      - name: Send Slack Notification on Failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.17.0
+        with:
+          channel-id: ${{ secrets.SLACK_CHANNEL_ID }}
+          slack-token: ${{ secrets.SLACK_TOKEN }}
+          text: "Workflow Failure: ${{ github.workflow }} build failed."
+
+      # Step 17: Clean up Docker images (optional)
+      - name: Clean up old Docker images
+        run: |
+          docker image prune -af  # Removes unused images
+
+      # Step 18: Send Email on Failure (optional)
+      - name: Send email on failure
+        if: failure()
+        run: |
+          echo "Subject: GitHub Actions Failure Notification" > email.txt
+          echo "The GitHub Actions workflow failed. Please check the logs." >> email.txt
+          echo "Job: ${{ github.workflow }}" >> email.txt
+          echo "Commit: ${{ github.sha }}" >> email.txt
+          echo "Run URL: ${{ github.server_url }}/${{ github.repository }}/runs/${{ github.run_id }}" >> email.txt
+          sendmail -S smtp.gmail.com:587 -f ${{ secrets.GMAIL_USER }} -t "your-email@example.com" \
+          -au${{ secrets.GMAIL_USER }} -ap${{ secrets.GMAIL_PASSWORD }} < email.txt
+
+      # Step 19: Deploy to AWS Lambda (optional)
+      - name: Deploy to AWS Lambda (if using Lambda)
+        if: success()
+        run: |
+          aws lambda update-function-code --function-name my-function --zip-file fileb://function.zip
+
+      # Step 20: Run Custom Webhook (optional)
+      - name: Send custom webhook on failure
+        if: failure()
+        run: |
+          curl -X POST -d '{"status": "failed", "commit": "${{ github.sha }}"}' https://your-webhook-url.com
+
+
+
+
+          Key Features and Tasks in the Workflow:
+Multiple Python Version Testing: The workflow tests your code against different Python versions (3.8, 3.9, and 3.10) to ensure cross-version compatibility.
+Caching Python Dependencies: This ensures that the dependencies are cached, speeding up the workflow.
+Run Tests and Upload Results: pytest runs the tests and optionally uploads the results to GitHub artifacts.
+Code Linting with flake8: flake8 is used for Python code linting, ensuring that your code follows best practices.
+Security Scanning with Snyk: This optional step checks for vulnerabilities in your dependencies.
+Docker Image Build and Push: This workflow builds and pushes Docker images to Docker Hub.
+Code Coverage: Runs tests with coverage and uploads the report to Codecov.
+Deployment: Includes manual approval and deployment to staging or production environments.
+Notifications: Sends Slack notifications on success or failure of the workflow.
+Clean-up Docker Images: This step removes unused Docker images after the workflow completes.
+Email Notification: Sends an email on failure with details about the job and the run.
+AWS Lambda Deployment: An optional example for deploying to AWS Lambda (adjust to your setup).
+Custom Webhook: Sends a custom webhook to an external system on failure.

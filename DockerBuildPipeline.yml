@@ -1,0 +1,48 @@
+trigger:
+- master
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+# Step 1: Install Docker (if not already installed in the image)
+- script: |
+    sudo apt-get update
+    sudo apt-get install -y docker.io
+  displayName: 'Install Docker'
+
+# Step 2: Set up Docker Hub credentials (You can store your credentials securely in Azure DevOps Pipeline secrets)
+- task: Docker@2
+  inputs:
+    command: 'login'
+    containerRegistry: '$(dockerRegistryServiceConnection)' # Use the service connection in Azure DevOps for Docker Hub
+
+# Step 3: Build Docker image
+- script: |
+    docker build -t myusername/myapp:$(Build.BuildId) .
+  displayName: 'Build Docker Image'
+
+# Step 4: Push Docker image to Docker Hub
+- script: |
+    docker push myusername/myapp:$(Build.BuildId)
+  displayName: 'Push Docker Image to Docker Hub'
+
+# Optional: Copy test results to artifact staging directory (if you want to keep test results)
+- script: |
+    mkdir -p $(Build.ArtifactStagingDirectory)/test-results
+    cp test-results.xml $(Build.ArtifactStagingDirectory)/test-results/  # Copy the test result file
+  displayName: 'Copy Test Results to Staging Directory'
+
+# Step 5: Publish test results (for reporting in pipeline)
+- task: PublishTestResults@2
+  inputs:
+    testResultsFiles: '**/test-results.xml'  # Correct path to the test result file
+    testRunTitle: 'Python Test Run'
+    mergeTestResults: true
+
+# Step 6: Publish build artifacts (including test results)
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: $(Build.ArtifactStagingDirectory)/test-results  # Path to the staged test results
+    ArtifactName: 'test-results'
+    publishLocation: 'Container'  # Publish the artifact in Azure DevOps container
